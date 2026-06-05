@@ -1,0 +1,19 @@
+[Unit]
+Description=Stramatel to Scorelayer bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/stramatel-scorelayer-bridge
+EnvironmentFile=/etc/stramatel-scorelayer.env
+ExecStart=/opt/stramatel-scorelayer-bridge/venv/bin/python /opt/stramatel-scorelayer-bridge/stramatel_scorelayer_bridge.py --port ${STRAMATEL_PORT} --baudrate ${STRAMATEL_BAUDRATE}
+Restart=always
+RestartSec=3
+User=pi
+Group=pi
+SupplementaryGroups=dialout
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

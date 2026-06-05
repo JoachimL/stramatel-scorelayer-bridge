@@ -99,6 +99,11 @@ class FrameReader:
         self.bytes_seen += len(chunk)
         self.buffer.extend(chunk)
 
+        if len(self.buffer) > FRAME_LEN * 8:
+            log(f"Buffer cap exceeded ({len(self.buffer)} bytes), discarding")
+            self.buffer.clear()
+            return
+
         while True:
             start = self.buffer.find(bytes([START]))
 
@@ -119,12 +124,21 @@ class FrameReader:
 
             if candidate[-1] != END:
                 self.misaligned_frames += 1
+                next_start = self.buffer.find(bytes([START]), 1)
+                if next_start == -1:
+                    log(
+                        "Misaligned candidate frame: "
+                        f"expected END=0x{END:02X} at byte {FRAME_LEN - 1}, "
+                        f"got 0x{candidate[-1]:02X}. No next START found, discarding buffer."
+                    )
+                    self.buffer.clear()
+                    return
                 log(
                     "Misaligned candidate frame: "
                     f"expected END=0x{END:02X} at byte {FRAME_LEN - 1}, "
-                    f"got 0x{candidate[-1]:02X}. Dropping START and resyncing."
+                    f"got 0x{candidate[-1]:02X}. Seeking next START at +{next_start}."
                 )
-                del self.buffer[:1]
+                del self.buffer[:next_start]
                 continue
 
             del self.buffer[:FRAME_LEN]
@@ -167,14 +181,14 @@ def parse_clock(d1: int, d2: int, d3: int, d4: int) -> ClockParseResult:
 
         if a is not None and b is not None and tenths is not None:
             seconds = a * 10 + b
-            total_ms = (seconds * 1000) + (tenths * 100)
-
-            return ClockParseResult(
-                raw=raw,
-                display=f"00:{seconds:02d}.{tenths}",
-                current_time_ms=total_ms,
-                mode="SS_TENTHS",
-            )
+            if seconds <= 59:
+                total_ms = (seconds * 1000) + (tenths * 100)
+                return ClockParseResult(
+                    raw=raw,
+                    display=f"00:{seconds:02d}.{tenths}",
+                    current_time_ms=total_ms,
+                    mode="SS_TENTHS",
+                )
 
     return ClockParseResult(
         raw=raw,
@@ -353,6 +367,8 @@ def make_simulated_frame(
     seconds: int,
     code: int = 0x35,
 ) -> bytes:
+    if not (0 <= minutes <= 99 and 0 <= seconds <= 59):
+        raise ValueError(f"Invalid clock value: {minutes:02d}:{seconds:02d}")
     frame = bytearray(b" " * FRAME_LEN)
     frame[0] = START
     frame[1] = code
@@ -401,15 +417,16 @@ def simulate_loop(
             reason = "changed" if changed else "heartbeat"
             log(f"Emitting simulated state because {reason}")
             log_state(state, verbose=verbose)
-            client.push(state)
+            pushed = client.push(state)
 
             last_key = key
-            last_push_at = now_monotonic
+            if pushed:
+                last_push_at = now_monotonic
 
         seconds += 1
         if seconds >= 60:
             seconds = 0
-            minutes += 1
+            minutes = (minutes + 1) % 100
 
         time.sleep(interval_seconds)
 
@@ -493,17 +510,18 @@ def serial_loop(
                     reason = "changed" if changed else "heartbeat"
                     log(f"Emitting state because {reason}")
                     log_state(state, verbose=verbose)
-                    client.push(state)
+                    pushed = client.push(state)
 
                     last_key = key
-                    last_push_at = now_monotonic
+                    if pushed:
+                        last_push_at = now_monotonic
                 elif verbose:
                     log(
                         "Frame parsed but skipped because unchanged "
                         f"clock={state.clock_display} currentTimeMs={state.current_time_ms}"
                     )
 
-        except SerialException as e:
+        except (SerialException, OSError) as e:
             log(f"Serial error: {e}")
 
             if ser:
@@ -513,6 +531,7 @@ def serial_loop(
                     pass
 
             ser = None
+            reader = FrameReader()
             log(f"Reconnecting in {reconnect_delay_seconds}s")
             time.sleep(reconnect_delay_seconds)
 
