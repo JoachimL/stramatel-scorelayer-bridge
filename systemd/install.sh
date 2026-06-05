@@ -1,18 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  echo "Usage: $0 [--user USER]"
+  echo
+  echo "  --user USER   System user to run the service (default: \$USER)"
+  exit 1
+}
+
+SERVICE_USER="${USER}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --user) SERVICE_USER="${2:?--user requires a value}"; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "Unknown argument: $1"; usage ;;
+  esac
+done
+
 APP_DIR="/opt/stramatel-scorelayer-bridge"
 SERVICE_NAME="stramatel-scorelayer"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 ENV_FILE="/etc/stramatel-scorelayer.env"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "Installing Stramatel Scorelayer bridge..."
+echo "Installing Stramatel Scorelayer bridge as user '${SERVICE_USER}'..."
 
 sudo apt update
 sudo apt install -y python3 python3-venv python3-pip git
 
 sudo mkdir -p "$APP_DIR"
-sudo chown -R "$USER:$USER" "$APP_DIR"
+sudo chown -R "${SERVICE_USER}:${SERVICE_USER}" "$APP_DIR"
 
 cd "$APP_DIR"
 
@@ -37,29 +55,14 @@ EOF
   echo "Edit it and set SCORELAYER_API_TOKEN before starting the service."
 fi
 
-sudo tee "$SERVICE_FILE" > /dev/null <<EOF
-[Unit]
-Description=Stramatel to Scorelayer bridge
-After=network-online.target
-Wants=network-online.target
+sed \
+  -e "s|__USER__|${SERVICE_USER}|g" \
+  -e "s|/opt/stramatel-scorelayer-bridge|${APP_DIR}|g" \
+  -e "s|/etc/stramatel-scorelayer.env|${ENV_FILE}|g" \
+  "${SCRIPT_DIR}/stramatel-scorelayer.service" \
+  | sudo tee "$SERVICE_FILE" > /dev/null
 
-[Service]
-Type=simple
-WorkingDirectory=$APP_DIR
-EnvironmentFile=$ENV_FILE
-ExecStart=$APP_DIR/venv/bin/python $APP_DIR/stramatel_scorelayer_bridge.py --port \${STRAMATEL_PORT} --baudrate \${STRAMATEL_BAUDRATE}
-Restart=always
-RestartSec=3
-User=$USER
-Group=$USER
-SupplementaryGroups=dialout
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo usermod -aG dialout "$USER"
+sudo usermod -aG dialout "$SERVICE_USER"
 
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"

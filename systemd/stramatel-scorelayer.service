@@ -1,3 +1,5 @@
+# Template — __USER__, /opt/stramatel-scorelayer-bridge, and /etc/stramatel-scorelayer.env
+# are substituted by systemd/install.sh [--user USER] at install time.
 [Unit]
 Description=Stramatel to Scorelayer bridge
 After=network-online.target
@@ -10,8 +12,8 @@ EnvironmentFile=/etc/stramatel-scorelayer.env
 ExecStart=/opt/stramatel-scorelayer-bridge/venv/bin/python /opt/stramatel-scorelayer-bridge/stramatel_scorelayer_bridge.py --port ${STRAMATEL_PORT} --baudrate ${STRAMATEL_BAUDRATE}
 Restart=always
 RestartSec=3
-User=pi
-Group=pi
+User=__USER__
+Group=__USER__
 SupplementaryGroups=dialout
 Environment=PYTHONUNBUFFERED=1
 
