@@ -172,6 +172,22 @@ def parse_clock(d1: int, d2: int, d3: int, d4: int) -> ClockParseResult:
             mode="MMSS_INVALID_SECONDS",
         )
 
+    # Sub-10-minute mode: space + M + SS, e.g. " 839" => 8:39
+    if d1 == 0x20:
+        m = byte_to_digit(d2)
+        s_tens = byte_to_digit(d3)
+        s_ones = byte_to_digit(d4)
+        if m is not None and s_tens is not None and s_ones is not None:
+            seconds = s_tens * 10 + s_ones
+            if seconds <= 59:
+                total_ms = ((m * 60) + seconds) * 1000
+                return ClockParseResult(
+                    raw=raw,
+                    display=f"0{m}:{seconds:02d}",
+                    current_time_ms=total_ms,
+                    mode="MMSS",
+                )
+
     # Under-one-minute mode from known Stramatel parser:
     # S S t space, e.g. "560 " => 56.0 seconds
     if d4 == 0x20:
@@ -279,7 +295,8 @@ class ScorelayerClient:
         return {
             "clock": {
                 "running": True,
-                "currentTimeMs": state.current_time_ms,
+                #"currentTimeMs": state.current_time_ms,
+                "remainingMs": state.current_time_ms,
             }
         }
 
