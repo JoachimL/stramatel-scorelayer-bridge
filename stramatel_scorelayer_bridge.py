@@ -295,8 +295,7 @@ class ScorelayerClient:
         return {
             "clock": {
                 "running": True,
-                #"currentTimeMs": state.current_time_ms,
-                "remainingMs": state.current_time_ms,
+                "currentTimeMs": state.current_time_ms,
             }
         }
 

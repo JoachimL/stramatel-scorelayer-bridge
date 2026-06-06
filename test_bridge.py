@@ -174,11 +174,45 @@ def test_parse_clock_unknown_all_spaces():
 # ---------------------------------------------------------------------------
 
 def _make_frame(code: int = 0x35, clock: bytes = b"1941") -> bytes:
-    """Build a minimal valid 54-byte frame."""
+    """Build a minimal valid 54-byte frame (zero-filled interior)."""
     frame = bytearray(FRAME_LEN)
     frame[0] = START
     frame[1] = code
     frame[4:8] = clock
+    frame[FRAME_LEN - 1] = END
+    return bytes(frame)
+
+
+def _make_score_frame(
+    clock: bytes,
+    home_raw: bytes,
+    away_raw: bytes,
+    code: int = 0x35,
+) -> bytes:
+    """
+    Build a space-filled 54-byte frame suitable for token tests.
+
+    Layout (interior bytes 2-52 are 0x20 / space):
+      0-1   : START + code
+      2-3   : spaces
+      4-7   : clock bytes
+      8     : space
+      9..   : home_raw bytes
+      +1    : space separator
+      ..    : away_raw bytes
+      rest  : spaces
+      53    : END
+
+    This mirrors the CP437-decoded token structure seen in real hardware logs.
+    """
+    frame = bytearray(b"\x20" * FRAME_LEN)
+    frame[0] = START
+    frame[1] = code
+    frame[4:8] = clock
+    home_start = 9
+    frame[home_start : home_start + len(home_raw)] = home_raw
+    away_start = home_start + len(home_raw) + 1
+    frame[away_start : away_start + len(away_raw)] = away_raw
     frame[FRAME_LEN - 1] = END
     return bytes(frame)
 
@@ -276,3 +310,113 @@ def test_frame_reader_stats():
     list(reader.feed(frame))
     assert reader.frames_seen == 1
     assert reader.bytes_seen == FRAME_LEN
+
+
+# ---------------------------------------------------------------------------
+# Scores — token extraction
+#
+# Scores are not parsed into dedicated state fields yet; they appear in the
+# `tokens` list produced from the CP437-decoded frame:
+#   tokens[2] = home score as decimal ASCII  (e.g. ' 3' → '3', '13' → '13')
+#   tokens[3] = away score as hex ASCII      (e.g. b'\x30\x45' → '0E')
+#
+# Away score encoding hypothesis (unary/thermometer):
+#   bin(int(token, 16)).count('1') gives the score.
+#   0x0E = 0b00001110 → 3 set bits → score 3
+#   0x1E = 0b00011110 → 4 set bits → score 4
+#   0x3E = 0b00111110 → 5 set bits → score 5
+#   (needs further confirmation with more real-world data)
+# ---------------------------------------------------------------------------
+
+# Clock bytes used in the score log examples (sub-10-min format ' MMM')
+_CLK_151 = b"\x20\x31\x35\x31"  # ' 151' → 01:51
+_CLK_148 = b"\x20\x31\x34\x38"  # ' 148' → 01:48
+_CLK_141 = b"\x20\x31\x34\x31"  # ' 141' → 01:41
+_CLK_140 = b"\x20\x31\x34\x30"  # ' 140' → 01:40
+
+
+def test_score_tokens_home3_away_0E():
+    """Real log: home=3, away='0E' (score 3 in thermometer encoding)."""
+    state = parse_frame(_make_score_frame(
+        clock=_CLK_151,
+        home_raw=b"\x33",        # '3'
+        away_raw=b"\x30\x45",   # '0E'
+    ))
+    assert state.valid
+    assert state.tokens[2] == "3"
+    assert state.tokens[3] == "0E"
+
+
+def test_score_tokens_home5_away_0E():
+    """Real log: home increased to 5, away still '0E'."""
+    state = parse_frame(_make_score_frame(
+        clock=_CLK_148,
+        home_raw=b"\x35",        # '5'
+        away_raw=b"\x30\x45",   # '0E'
+    ))
+    assert state.tokens[2] == "5"
+    assert state.tokens[3] == "0E"
+
+
+def test_score_tokens_home13_away_0E():
+    """Real log: home reached 13, away still '0E'."""
+    state = parse_frame(_make_score_frame(
+        clock=_CLK_141,
+        home_raw=b"\x31\x33",   # '13' (two-digit score)
+        away_raw=b"\x30\x45",   # '0E'
+    ))
+    assert state.tokens[2] == "13"
+    assert state.tokens[3] == "0E"
+
+
+def test_score_tokens_home13_away_1E():
+    """Real log: away score increased to '1E' (score 4 in thermometer encoding)."""
+    state = parse_frame(_make_score_frame(
+        clock=_CLK_141,
+        home_raw=b"\x31\x33",   # '13'
+        away_raw=b"\x31\x45",   # '1E'
+    ))
+    assert state.tokens[2] == "13"
+    assert state.tokens[3] == "1E"
+
+
+def test_score_tokens_home13_away_3E():
+    """Real log: away score increased to '3E' (score 5 in thermometer encoding)."""
+    state = parse_frame(_make_score_frame(
+        clock=_CLK_140,
+        home_raw=b"\x31\x33",   # '13'
+        away_raw=b"\x33\x45",   # '3E'
+    ))
+    assert state.tokens[2] == "13"
+    assert state.tokens[3] == "3E"
+
+
+def test_score_home_single_to_double_digit():
+    """Home score transition from single-digit to two-digit produces correct tokens."""
+    for home_bytes, expected in [
+        (b"\x39", "9"),    # single digit
+        (b"\x31\x30", "10"),  # two digits
+    ]:
+        state = parse_frame(_make_score_frame(
+            clock=_CLK_148,
+            home_raw=home_bytes,
+            away_raw=b"\x30\x45",
+        ))
+        assert state.tokens[2] == expected, f"home_raw={home_bytes!r}"
+
+
+def test_score_away_thermometer_encoding():
+    """Away score thermometer encoding: set-bit count of int(token, 16) = score."""
+    cases = [
+        (b"\x30\x45", "0E", 3),  # 0x0E = 0b00001110 → 3 set bits
+        (b"\x31\x45", "1E", 4),  # 0x1E = 0b00011110 → 4 set bits
+        (b"\x33\x45", "3E", 5),  # 0x3E = 0b00111110 → 5 set bits
+    ]
+    for away_raw, expected_token, expected_score in cases:
+        state = parse_frame(_make_score_frame(
+            clock=_CLK_148,
+            home_raw=b"\x33",
+            away_raw=away_raw,
+        ))
+        assert state.tokens[3] == expected_token
+        assert bin(int(state.tokens[3], 16)).count("1") == expected_score
