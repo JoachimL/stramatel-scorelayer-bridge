@@ -63,9 +63,15 @@ sudo systemctl start stramatel-scorelayer
 journalctl -u stramatel-scorelayer -f
 ```
 
+## Tests
+
+```bash
+pip install -r requirements.txt
+pytest test_bridge.py
+```
+
 ## Known limitations
 
 - **`running` is hardcoded `true`** — the Stramatel byte that signals clock running/stopped has not been identified. The API always receives `"running": true`, so downstream displays will show the clock as running even when it is stopped.
 - **Frame protocol is reverse-engineered** — only the clock digits (bytes 4–7) and display code (byte 1) are reliably decoded. The meaning of most other bytes is unknown.
 - **SS_TENTHS mode is inferred** — the sub-minute display format (`56.0 s`) is based on one observed pattern; other Stramatel models or firmware versions may differ.
-- **No tests** — there is no automated test suite. Use `--simulate --dry-run --verbose` to exercise parsing manually.
